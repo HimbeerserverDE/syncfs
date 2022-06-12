@@ -1,2 +1,2 @@
 # syncfs
-Sync drives remotely if possible
+Sync drives remotely if available
