@@ -1,0 +1,13 @@
+DEFAULT			menu.c32
+MENU TITLE		Server PXE Boot Menu
+TIMEOUT			30
+
+LABEL			disk
+MENU LABEL		^Boot from First Hard Disk
+MENU DEFAULT
+LOCALBOOT		0
+
+LABEL			cloner
+MENU LABEL		^Cloner Prototype
+KERNEL			cloner/vmlinuz
+APPEND			root=/dev/nfs netboot=nfs nfsroot=198.51.100.1:/var/lib/tftp/cloner/ initrd=cloner/initrd.img
