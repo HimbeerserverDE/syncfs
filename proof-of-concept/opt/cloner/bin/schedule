@@ -1,0 +1,8 @@
+#! /bin/bash
+
+mkdir -p /opt/cloner/jobs/$2
+echo $3 > /opt/cloner/jobs/$2/$1
+
+MAC=`echo $2 | sed 's/.\{2\}/&-/g' | rev | cut -c2- | rev`
+
+cp -p /opt/cloner/job_boot /var/lib/tftpboot/pxelinux.cfg/01-${MAC}
