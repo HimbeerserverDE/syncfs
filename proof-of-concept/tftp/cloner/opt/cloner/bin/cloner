@@ -1,0 +1,153 @@
+#! /bin/bash
+
+set -e
+
+SERVER=198.51.100.1
+MAC=`ip l | grep 'link/ether' | sed -n '1 p' | awk '{print $2}' | sed 's/://g'`
+HOSTNAME="clone${MAC}"
+CFG=`echo ${MAC} | sed 's/.\{2\}/&-/g' | rev | cut -c2- | rev`
+PASSPHRASE="1234"
+
+print() {
+	echo $1 > /dev/kmsg 2>&1
+}
+
+init() {
+	mount -t nfs ${SERVER}:/var/lib/tftpboot/pxelinux.cfg/ /media/pxelinux.cfg/
+	mount -t nfs ${SERVER}:/opt/cloner/jobs/ /media/jobs/
+	mount -t nfs ${SERVER}:/var/lib/images/ /media/images/
+
+	print "Cloner Prototype"
+	print "Root filesystem type is ${ROOTFS_TYPE}"
+}
+
+clean_up() {
+	print "Cleaning up"
+
+	umount /media/pxelinux.cfg/
+	umount /media/jobs/
+	umount /media/images/
+}
+
+get_rootfs_type() {
+	set +e
+
+	cryptsetup isLuks /dev/sda5
+	if [ "$?" == "0" ]; then
+		ROOTFS_TYPE="encrypted_lvm"
+	else
+		if [ -n "$(lvscan)" ]; then
+			ROOTFS_TYPE="lvm"
+		else
+			ROOTFS_TYPE="partition1"
+		fi
+	fi
+
+	set -e
+}
+
+mount_root() {
+	get_rootfs_type
+
+	if [ "${ROOTFS_TYPE}" == "encrypted_lvm" ]; then
+		print "Unlocking sda5_crypt"
+		echo ${PASSPHRASE} | cryptsetup luksOpen /dev/sda5 sda5_crypt
+	fi
+
+	if [ "${ROOTFS_TYPE}" == "encrypted_lvm" ] || [ "${ROOTFS_TYPE}" == "lvm" ]; then
+		print "Activating root LV"
+		LV=$(lvscan | grep root | awk '{print $2}' | sed "s|/dev/||g" | sed "s/'//g")
+		lvchange -ay ${LV}
+
+		print "Mounting root LV"
+		mount /dev/${LV} /media/disk/
+	fi
+
+	if [ "${ROOTFS_TYPE}" == "partition1" ]; then
+		print "Mounting root partition"
+		mount /dev/sda1 /media/disk/
+	fi
+}
+
+umount_root() {
+	print "Unmounting root filesystem"
+	umount /media/disk/
+
+	if [ "${ROOTFS_TYPE}" == "encrypted_lvm" ] || [ "${ROOTFS_TYPE}" == "lvm" ]; then
+		print "Deactivating LVs"
+		VG=$(lvscan | grep root | awk '{print $2}' | sed "s|'/dev/||g" | cut -d '/' -f 1)
+		lvchange -an ${VG}
+	fi
+
+	if [ "${ROOTFS_TYPE}" == "encrypted_lvm" ]; then
+		print "Locking sda5_crypt"
+		cryptsetup luksClose sda5_crypt
+	fi
+}
+
+set_hostname() {
+	mount_root
+
+	print "Setting hostname"
+	sed -i "s/$1/${HOSTNAME}/g" /media/disk/etc/hostname
+	sed -i "s/$1/${HOSTNAME}/g" /media/disk/etc/hosts
+
+	umount_root
+}
+
+capture_image() {
+	print "Capturing image of /dev/sda"
+
+	mount_root
+
+	print "Stripping hostname from image"
+	sed -i "s/${HOSTNAME}/$1/g" /media/disk/etc/hostname
+	sed -i "s/${HOSTNAME}/$1/g" /media/disk/etc/hosts
+
+	umount_root
+
+	dd if=/dev/sda bs=1G | zstd -T0 --fast=19 - -o /media/images/$1.zst > /dev/kmsg 2>&1
+
+	set_hostname $1
+}
+
+deploy_image() {
+	print "Deploying image to /dev/sda"
+	zstd -T0 --fast=19 -d /media/images/$1.zst --stdout | dd of=/dev/sda bs=1G status=progress > /dev/kmsg 2>&1
+
+	set_hostname $1
+}
+
+init
+
+set +e
+IMG=$(cat /media/jobs/${MAC}/capture)
+set -e
+
+if [ -n "${IMG}" ]; then
+	if [ -f "/media/images/${IMG}.zst" ]; then
+		print "Removing existing image"
+		rm /media/images/${IMG}.zst
+	fi
+
+	capture_image ${IMG}
+
+	rm /media/pxelinux.cfg/01-${CFG}
+	rm /media/jobs/${MAC}/capture
+fi
+
+set +e
+IMG=$(cat /media/jobs/${MAC}/deploy)
+set -e
+
+if [ -n "${IMG}" ]; then
+	deploy_image ${IMG}
+
+	rm /media/pxelinux.cfg/01-${CFG}
+	rm /media/jobs/${MAC}/deploy
+fi
+
+clean_up
+
+print "No pending jobs, rebooting"
+systemctl reboot
