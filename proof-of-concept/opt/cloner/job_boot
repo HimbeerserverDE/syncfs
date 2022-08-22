@@ -1,0 +1,6 @@
+DEFAULT		cloner
+TIMEOUT		0
+
+LABEL		cloner
+KERNEL		cloner/vmlinuz
+APPEND		root=/dev/nfs netboot=nfs nfsroot=198.51.100.1:/var/lib/tftp/cloner/ initrd=cloner/initrd.img
